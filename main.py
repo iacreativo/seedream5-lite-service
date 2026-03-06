@@ -17,7 +17,7 @@ RH_BASE_URL = "https://www.runninghub.cn"
 RH_API_KEY = os.getenv("RUNNINGHUB_API_KEY")
 
 async def upload_to_rh(file_content: bytes, filename: str, api_key: str):
-    """Upload image to RunningHub and return the fileName."""
+    """Upload image to RunningHub and return the download URL."""
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
@@ -33,7 +33,9 @@ async def upload_to_rh(file_content: bytes, filename: str, api_key: str):
                         raise HTTPException(status_code=502, detail=f"RH Upload Failed: {res_json}")
                     await asyncio.sleep(2)
                     continue
-                return res_json["data"]["fileName"]
+                file_name = res_json["data"]["fileName"]
+                download_url = f"https://www.runninghub.cn/view?filename={file_name}&type=input"
+                return download_url
         except Exception as e:
             print(f"RH Upload Exception: {str(e)}")
             if attempt == max_attempts - 1:

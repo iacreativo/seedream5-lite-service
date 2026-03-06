@@ -16,32 +16,6 @@ app = FastAPI(title=SERVICE_TITLE)
 RH_BASE_URL = "https://www.runninghub.cn"
 RH_API_KEY = os.getenv("RUNNINGHUB_API_KEY")
 
-async def upload_to_rh(file_content: bytes, filename: str, api_key: str):
-    """Upload image to RunningHub and return the download URL."""
-    max_attempts = 3
-    for attempt in range(max_attempts):
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                files = {"file": (filename, file_content)}
-                data = {"apiKey": api_key, "fileType": "image"}
-                print(f"Uploading to RH (Attempt {attempt+1}/{max_attempts})...")
-                response = await client.post(f"{RH_BASE_URL}/task/openapi/upload", data=data, files=files)
-                res_json = response.json()
-                if res_json.get("code") != 0:
-                    print(f"RH Upload Warning: {res_json}")
-                    if attempt == max_attempts - 1:
-                        raise HTTPException(status_code=502, detail=f"RH Upload Failed: {res_json}")
-                    await asyncio.sleep(2)
-                    continue
-                file_name = res_json["data"]["fileName"]
-                download_url = f"https://www.runninghub.cn/view?filename={file_name}&type=input"
-                return download_url
-        except Exception as e:
-            print(f"RH Upload Exception: {str(e)}")
-            if attempt == max_attempts - 1:
-                raise HTTPException(status_code=502, detail=f"RH Upload Error: {str(e)}")
-            await asyncio.sleep(2)
-
 async def get_image_dimensions(image_url: str):
     """Download image header and determine width and height."""
     try:
@@ -138,41 +112,16 @@ async def execute_seedream(req: SeedreamRequest):
 
     print(f"Processing Seedream request for: {req.image_url}")
     
-    # 1. Download and upload main image to RunningHub
-    print(f"Downloading main image from: {req.image_url}")
-    try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            resp = await client.get(req.image_url, headers=headers)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=400, detail=f"Failed to download image: Status {resp.status_code}")
-            main_image_content = resp.content
-            print(f"Image downloaded: {len(main_image_content)} bytes")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to download image: {str(e)}")
-    
-    # Upload main image to RunningHub
-    main_file_name = await upload_to_rh(main_image_content, "main_image.jpg", api_key)
-    print(f"Main image uploaded to RH: {main_file_name}")
-    
-    # 2. Prepare image URLs array (Main + References)
-    image_urls = [main_file_name]  # Use fileName instead of URL
-    
-    # 3. Upload reference images if any
+    # 1. Prepare image URLs array (Main + References)
+    image_urls = [req.image_url]
     if req.reference_image_urls:
-        for ref_url in req.reference_image_urls[:9]:  # Max 9 references
-            try:
-                print(f"Downloading reference from: {ref_url}")
-                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                    resp = await client.get(ref_url, headers={"User-Agent": "Mozilla/5.0"})
-                    if resp.status_code == 200:
-                        ref_file_name = await upload_to_rh(resp.content, "ref_image.jpg", api_key)
-                        image_urls.append(ref_file_name)
-                        print(f"Reference uploaded: {ref_file_name}")
-            except Exception as e:
-                print(f"Failed to upload reference: {e}")
+        image_urls.extend(req.reference_image_urls)
     
-    # 4. Detect dimensions and calculate MAX size for that aspect ratio
+    # Max 10 images supported
+    if len(image_urls) > 10:
+        image_urls = image_urls[:10]
+
+    # 2. Detect dimensions and calculate MAX size for that aspect ratio
     width, height = await get_image_dimensions(req.image_url)
     
     output_width, output_height, aspect_name = calculate_max_dimensions_for_aspect_ratio(width, height)
@@ -180,7 +129,6 @@ async def execute_seedream(req: SeedreamRequest):
     print(f"Input: {width}x{height} ({width/height:.3f})")
     print(f"Output: MAX {output_width}x{output_height} for aspect ratio {aspect_name}")
 
-    # 5. Call Seedream API with the uploaded file names
     payload = {
         "imageUrls": image_urls,
         "prompt": req.prompt,
@@ -197,7 +145,7 @@ async def execute_seedream(req: SeedreamRequest):
 
     print(f"Starting Seedream 5 Lite task...")
     
-    # 6. Start Task
+    # 3. Start Task - Using direct URLs like Nanobanana does
     async with httpx.AsyncClient(timeout=60.0) as client:
         url = "https://www.runninghub.ai/openapi/v2/seedream-v5-lite/image-to-image"
         try:
@@ -212,7 +160,7 @@ async def execute_seedream(req: SeedreamRequest):
         task_id = res_data["taskId"]
         print(f"Task started: {task_id}")
         
-        # 7. Polling for Success
+        # 4. Polling for Success
         query_url = "https://www.runninghub.ai/openapi/v2/query"
         max_retries = 60 # 5 minutes
         
